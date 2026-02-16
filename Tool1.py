@@ -281,4 +281,154 @@ def main():
             file = st.file_uploader("上傳 CSV", type="csv", key="lin")
             if file:
                 df = pd.read_csv(file)
-                c1, c2 =
+                c1, c2 = st.columns(2)
+                ref_col = c1.selectbox("標準值欄位", df.columns)
+                val_col = c2.selectbox("量測值欄位", df.columns)
+                
+                df['Bias'] = df[val_col] - df[ref_col]
+                
+                # 迴歸分析 Bias = a + b * Ref
+                X = sm.add_constant(df[ref_col])
+                model = sm.OLS(df['Bias'], X).fit()
+                
+                st.write(f"**方程式**: Bias = {model.params['const']:.4f} + {model.params[ref_col]:.4f} * Ref")
+                st.write(f"**Slope P-Value**: {model.pvalues[ref_col]:.4f}")
+                
+                if model.pvalues[ref_col] < 0.05:
+                    st.error("線性度不佳 (Bias 隨尺寸變化)")
+                else:
+                    st.success("線性度良好 (Bias 穩定)")
+                
+                fig, ax = plt.subplots()
+                sns.regplot(x=ref_col, y='Bias', data=df, ax=ax)
+                st.pyplot(fig)
+
+        # --- 5.3 Gage R&R (ANOVA) ---
+        elif msa_type == "3. Gage R&R (ANOVA)":
+            st.subheader("Gage R&R (Crossed ANOVA)")
+            st.info("需欄位: 'Part', 'Operator', 'Value'")
+            
+            file = st.file_uploader("上傳 CSV", type="csv", key="grr")
+            if file:
+                df = pd.read_csv(file)
+                c1, c2, c3 = st.columns(3)
+                p_col = c1.selectbox("Part", df.columns)
+                o_col = c2.selectbox("Operator", df.columns)
+                v_col = c3.selectbox("Value", df.select_dtypes(include=np.number).columns)
+                
+                if st.button("執行 ANOVA"):
+                    try:
+                        # 轉為分類變數
+                        df[p_col] = df[p_col].astype(str)
+                        df[o_col] = df[o_col].astype(str)
+                        
+                        formula = f"{v_col} ~ C({p_col}) + C({o_col}) + C({p_col}):C({o_col})"
+                        model = ols(formula, data=df).fit()
+                        aov_table = anova_lm(model, typ=2)
+                        
+                        # 變異數成分估算 (簡化版)
+                        ms_part = aov_table.loc[f"C({p_col})", 'mean_sq']
+                        ms_oper = aov_table.loc[f"C({o_col})", 'mean_sq']
+                        ms_inter = aov_table.loc[f"C({p_col}):C({o_col})", 'mean_sq']
+                        ms_error = aov_table.loc['Residual', 'mean_sq']
+                        
+                        n_p = df[p_col].nunique()
+                        n_o = df[o_col].nunique()
+                        n_rep = len(df) / (n_p * n_o)
+                        
+                        var_repeat = ms_error
+                        var_inter = max(0, (ms_inter - ms_error) / n_rep)
+                        var_repro = max(0, (ms_oper - ms_inter) / (n_p * n_rep)) + var_inter
+                        var_part = max(0, (ms_part - ms_inter) / (n_o * n_rep))
+                        
+                        var_grr = var_repeat + var_repro
+                        var_total = var_grr + var_part
+                        
+                        pct_study_var = (np.sqrt(var_grr) / np.sqrt(var_total)) * 100
+                        
+                        st.metric("% GRR (Study Var)", f"{pct_study_var:.2f}%")
+                        if pct_study_var < 10: st.success("🟢 優秀 (<10%)")
+                        elif pct_study_var < 30: st.warning("🟡 可接受 (10-30%)")
+                        else: st.error("🔴 不合格 (>30%)")
+                        
+                        # 繪圖
+                        fig, ax = plt.subplots()
+                        sns.pointplot(x=p_col, y=v_col, hue=o_col, data=df, ax=ax)
+                        ax.set_title("Operator * Part Interaction")
+                        st.pyplot(fig)
+                        
+                    except Exception as e:
+                        st.error(f"計算錯誤: {e}")
+
+        # --- 5.4 Gage Stability ---
+        elif msa_type == "4. Gage Stability (穩定性)":
+            st.subheader("Gage Stability (Xbar-R Chart)")
+            st.info("需欄位: 'Value', 'Group'(日期/組別)")
+            
+            file = st.file_uploader("上傳 CSV", type="csv", key="stab")
+            if file:
+                df = pd.read_csv(file)
+                c1, c2 = st.columns(2)
+                v_col = c1.selectbox("數值欄位", df.select_dtypes(include=np.number).columns)
+                g_col = c2.selectbox("分組欄位", df.columns)
+                
+                if st.button("執行穩定性分析"):
+                    try:
+                        df[g_col] = df[g_col].astype(str)
+                        grouped = df.groupby(g_col)[v_col].agg(['mean', 'min', 'max', 'count'])
+                        grouped['range'] = grouped['max'] - grouped['min']
+                        grouped = grouped.reset_index()
+                        
+                        n_val = grouped['count'].mean()
+                        n = int(round(n_val))
+                        st.write(f"平均樣本數 (n): {n}")
+                        
+                        # SPC Constants (n=2 to 10)
+                        spc = {
+                            2: {'A2': 1.880, 'D4': 3.267, 'd2': 1.128},
+                            3: {'A2': 1.023, 'D4': 2.574, 'd2': 1.693},
+                            4: {'A2': 0.729, 'D4': 2.282, 'd2': 2.059},
+                            5: {'A2': 0.577, 'D4': 2.114, 'd2': 2.326},
+                            6: {'A2': 0.483, 'D4': 2.004, 'd2': 2.534},
+                            7: {'A2': 0.419, 'D4': 1.924, 'd2': 2.704},
+                            8: {'A2': 0.373, 'D4': 1.864, 'd2': 2.847},
+                            9: {'A2': 0.337, 'D4': 1.816, 'd2': 2.970},
+                            10:{'A2': 0.308, 'D4': 1.777, 'd2': 3.078},
+                        }
+                        
+                        if n in spc:
+                            const = spc[n]
+                            xb = grouped['mean'].mean()
+                            rb = grouped['range'].mean()
+                            
+                            ucl_x = xb + const['A2'] * rb
+                            lcl_x = xb - const['A2'] * rb
+                            ucl_r = const['D4'] * rb
+                            lcl_r = 0 
+                            
+                            st.write(f"Xbar Limit: [{lcl_x:.2f}, {ucl_x:.2f}], R Limit: [0, {ucl_r:.2f}]")
+                            
+                            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+                            
+                            # Xbar
+                            ax1.plot(grouped[g_col], grouped['mean'], 'o-b')
+                            ax1.axhline(xb, color='g')
+                            ax1.axhline(ucl_x, color='r', linestyle='--')
+                            ax1.axhline(lcl_x, color='r', linestyle='--')
+                            ax1.set_title("Xbar Chart")
+                            
+                            # R
+                            ax2.plot(grouped[g_col], grouped['range'], 'o-b')
+                            ax2.axhline(rb, color='g')
+                            ax2.axhline(ucl_r, color='r', linestyle='--')
+                            ax2.set_title("R Chart")
+                            
+                            st.pyplot(fig)
+                        else:
+                            st.error(f"目前支援 n=2~10, 您的 n={n}")
+                            
+                    except Exception as e:
+                        st.error(f"分析失敗: {e}")
+
+if __name__ == "__main__":
+    main()
