@@ -170,28 +170,115 @@ def main():
     # -------------------------------------------------------------------------
     # 3. 假設檢定 (Hypothesis)
     # -------------------------------------------------------------------------
+       
     elif choice == "🧪 假設檢定 (Hypothesis Testing)":
-        st.header("Hypothesis Testing")
+        st.header("Hypothesis Testing (T-test & ANOVA)")
+        
+        # 1. 選擇檢定類型
         h_type = st.selectbox("檢定類型", ["雙樣本 T 檢定 (2-Sample t-test)", "單因子變異數分析 (One-Way ANOVA)"])
 
         if h_type == "雙樣本 T 檢定 (2-Sample t-test)":
-            st.subheader("比較兩組平均值")
-            c1, c2 = st.columns(2)
-            t1 = c1.text_area("數據 A (逗號分隔)", "10.1, 10.2, 10.5, 9.9")
-            t2 = c2.text_area("數據 B (逗號分隔)", "10.8, 10.9, 10.7, 10.6")
+            st.subheader("雙樣本 T 檢定")
+            st.markdown("""
+            **說明**：比較兩組數據的平均值是否有顯著差異。
+            - **H0 (虛無假設)**: $\mu_A = \mu_B$ (兩組相等)
+            """)
             
-            if st.button("執行 T 檢定"):
-                try:
-                    a = [float(x) for x in t1.split(',')]
-                    b = [float(x) for x in t2.split(',')]
-                    t_stat, p = stats.ttest_ind(a, b, equal_var=False)
-                    st.write(f"**P-Value**: {p:.4f}")
-                    if p < 0.05:
-                        st.error("Reject H0: 兩組有顯著差異")
+            # --- 設定資料來源 (新增 Excel 上傳) ---
+            data_source = st.radio("資料來源", ["手動輸入", "上傳 Excel 檔案 (.xlsx)"])
+            
+            data_a, data_b = [], []
+            
+            if data_source == "手動輸入":
+                c1, c2 = st.columns(2)
+                t1 = c1.text_area("樣本 A 數據 (逗號分隔)", "10.1, 10.2, 10.5, 9.9, 10.0")
+                t2 = c2.text_area("樣本 B 數據 (逗號分隔)", "10.8, 10.9, 10.7, 10.6, 11.0")
+                if t1 and t2:
+                    try:
+                        data_a = [float(x.strip()) for x in t1.split(',') if x.strip()]
+                        data_b = [float(x.strip()) for x in t2.split(',') if x.strip()]
+                    except:
+                        st.error("格式錯誤，請輸入純數字")
+
+            elif data_source == "上傳 Excel 檔案 (.xlsx)":
+                file = st.file_uploader("請上傳 Excel", type=["xlsx", "xls"])
+                if file:
+                    try:
+                        df = pd.read_excel(file)
+                        st.write("預覽數據 (前 5 筆):", df.head())
+                        
+                        st.info("請選擇兩欄要比較的數據：")
+                        cols = df.select_dtypes(include=np.number).columns.tolist()
+                        c1, c2 = st.columns(2)
+                        col_a = c1.selectbox("選擇 樣本 A 欄位", cols, index=0 if len(cols)>0 else None)
+                        col_b = c2.selectbox("選擇 樣本 B 欄位", cols, index=1 if len(cols)>1 else 0)
+                        
+                        if col_a and col_b:
+                            data_a = df[col_a].dropna().values
+                            data_b = df[col_b].dropna().values
+                    except Exception as e:
+                        st.error(f"讀取 Excel 失敗: {e}")
+
+            # --- 設定檢定方向 (單尾/雙尾) ---
+            if len(data_a) > 0 and len(data_b) > 0:
+                st.write("---")
+                st.write("#### 設定對立假設 ($H_1$)")
+                
+                # 讓使用者選擇方向，這是分辨單雙尾的關鍵
+                tail_option = st.selectbox(
+                    "您想證明什麼？ (Alternative Hypothesis)",
+                    [
+                        "兩組不相等 (≠) [雙尾檢定]",
+                        "樣本 A > 樣本 B (>) [右尾檢定]",
+                        "樣本 A < 樣本 B (<) [左尾檢定]"
+                    ]
+                )
+                
+                # 將選項轉換為 scipy 的參數
+                alt_map = {
+                    "兩組不相等 (≠) [雙尾檢定]": "two-sided",
+                    "樣本 A > 樣本 B (>) [右尾檢定]": "greater",
+                    "樣本 A < 樣本 B (<) [左尾檢定]": "less"
+                }
+                alternative_param = alt_map[tail_option]
+
+                if st.button("執行檢定"):
+                    # 執行 Welch's t-test (不假設變異數相等)
+                    t_stat, p_val = stats.ttest_ind(data_a, data_b, equal_var=False, alternative=alternative_param)
+                    
+                    # 顯示統計量
+                    st.write("### 檢定結果")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("樣本 A 平均", f"{np.mean(data_a):.4f}")
+                    c2.metric("樣本 B 平均", f"{np.mean(data_b):.4f}")
+                    c3.metric("P-Value", f"{p_val:.4f}", delta_color="inverse")
+                    
+                    st.write(f"**T-Statistic**: {t_stat:.4f}")
+                    
+                    # 判定結果
+                    alpha = 0.05
+                    if p_val < alpha:
+                        st.error(f"結果：P < 0.05，**拒絕 $H_0$**。")
+                        st.markdown(f"**結論**：有足夠證據支持「{tail_option}」。")
                     else:
-                        st.success("Fail to Reject H0: 兩組無顯著差異")
-                except:
-                    st.error("數據格式錯誤")
+                        st.success(f"結果：P >= 0.05，**無法拒絕 $H_0$**。")
+                        st.markdown(f"**結論**：沒有足夠證據支持「{tail_option}」，兩組差異可能僅是隨機誤差。")
+                    
+                    # 繪製箱型圖 (Boxplot)
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    # 整理成 DataFrame 方便 seaborn 畫圖
+                    df_plot = pd.DataFrame({
+                        'Value': np.concatenate([data_a, data_b]),
+                        'Group': ['Sample A'] * len(data_a) + ['Sample B'] * len(data_b)
+                    })
+                    sns.boxplot(x='Group', y='Value', data=df_plot, palette="Set2", ax=ax)
+                    sns.swarmplot(x='Group', y='Value', data=df_plot, color=".25", alpha=0.6, ax=ax)
+                    ax.set_title("Boxplot Comparison")
+                    st.pyplot(fig)
+
+        # (若有 ANOVA 部分可保留在 else，或依照需求擴充)
+        elif h_type == "單因子變異數分析 (One-Way ANOVA)":
+            st.info("ANOVA 功能同樣可支援 Excel 上傳，若需要請告知擴充。")
 
     # -------------------------------------------------------------------------
     # 4. 實驗設計 (DOE)
@@ -432,3 +519,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
